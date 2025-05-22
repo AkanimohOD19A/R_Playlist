@@ -1,0 +1,444 @@
+---
+title: "Machine Learning with Tree-Based Models in R"
+output: html_notebook
+---
+
+## A case study of Alzheimers
+### MRI and Alzheimers
+Magnetic Resonance Imaging Comparisons of Demented and Nondemented Adults
+Source: https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers
+
+### About this Dataset
+Context:
+The Open Access Series of Imaging Studies (OASIS) is a project aimed at making MRI data sets of the brain freely available to the scientific community. By compiling and freely distributing MRI data sets, we hope to facilitate future discoveries in basic and clinical neuroscience. OASIS is made available by the Washington University Alzheimer’s Disease Research Center, Dr. Randy Buckner at the Howard Hughes Medical Institute (HHMI)( at Harvard University, the Neuroinformatics Research Group (NRG) at Washington University School of Medicine, and the Biomedical Informatics Research Network (BIRN).
+
+### Content:
+1. Cross-sectional MRI Data in Young, Middle Aged, Nondemented and Demented Older Adults: This set consists of a cross-sectional collection of 416 subjects aged 18 to 96. For each subject, 3 or 4 individual T1-weighted MRI scans obtained in single scan sessions are included. The subjects are all right-handed and include both men and women. 100 of the included subjects over the age of 60 have been clinically diagnosed with very mild to moderate Alzheimer’s disease (AD). Additionally, a reliability data set is included containing 20 nondemented subjects imaged on a subsequent visit within 90 days of their initial session.
+2. Longitudinal MRI Data in Nondemented and Demented Older Adults: This set consists of a longitudinal collection of 150 subjects aged 60 to 96. Each subject was scanned on two or more visits, separated by at least one year for a total of 373 imaging sessions. For each subject, 3 or 4 individual T1-weighted MRI scans obtained in single scan sessions are included. The subjects are all right-handed and include both men and women. 72 of the subjects were characterized as nondemented throughout the study. 64 of the included subjects were characterized as demented at the time of their initial visits and remained so for subsequent scans, including 51 individuals with mild to moderate Alzheimer’s disease. Another 14 subjects were characterized as nondemented at the time of their initial visit and were subsequently characterized as demented at a later visit.
+
+We have, essenstially, _static_ and _progressive_ data on alzheimers' pattern to play with.
+
+```{r Dependencies, echo=F, warning=F, message=F}
+# check and install required packages
+required_packages <- c("rpart", "randomForest", 
+                       "gbm", "xgboost", "e1071",
+                       "rpart.plot", "AUC", "Hmisc",
+                       "caret", "cowplot", "Metrics",
+                       "colorspace", "vtreat", "ranger",
+                       "PerformanceAnalytics")
+missing_packages <- required_packages[!required_packages %in% installed.packages()[, "Package"]]
+if(length(missing_packages)) {
+  install.packages(missing_packages)
+}
+
+library(tidymodels)
+library(tidyverse)
+library(broom)
+library(scales)
+library(GGally)
+library(janitor)
+library(kableExtra)
+# library(ISTR)
+library(gbm)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(xgboost)
+library(Hmisc)
+library(PerformanceAnalytics)
+library(cowplot)
+library(caret)
+library(e1071)
+library(randomForest)
+library(ranger)
+library(gbm)
+library(Metrics)
+library(vtreat)
+library(AUC)
+
+# conv_to_orig <- function(x){
+#   x[x == 1] <- 0
+#   x[x == 2] <- 0.5
+#   x[x == 3] <- 1
+#   x[x == 4] <- 2
+#   x <- as.factor(x)
+#   return (x)
+# }
+
+set.seed(123)
+setwd("C:/Users/AfrologicInsect/Documents/TBM")
+```
+
+
+### EDA
+```{r}
+for(var in names(static_df)){
+  unique_vals <- na.omit(unique(static_df[[var]]))
+  if(length(unique_vals) < 5){
+    cat(var, "\n")
+    print(table(static_df[[var]], useNA = "ifany"))
+    cat(strrep("*", 20), "\n")
+  }
+}
+```
+
+```{r}
+static_df <- read.csv("oasis_cross-sectional.csv") %>% 
+  clean_names() %>% 
+  select(-hand) %>% # they are all right handed
+  mutate(across(
+    where(~ is.numeric(.) && any(is.na(.))), ~ coalesce(., mean(., na.rm = TRUE))),
+         cdr = as.factor(cdr), # target variable
+         dementia = as.factor(ifelse(cdr == 0, 0, 1)),
+         )
+print(sample_n(static_df, 50))
+
+longi_df <- read.csv("oasis_longitudinal.csv") %>% 
+  clean_names()
+print(sample_n(longi_df, 50))
+```
+## Understanding the data
+**Summary: ** This set consists of a longitudinal collection of 150 subjects aged 60 to 96. Each subject was scanned on two or more visits, separated by at least one year for a total of 373 imaging sessions. For each subject, 3 or 4 individual T1-weighted MRI scans obtained in single scan sessions are included. The subjects are all right-handed and include both men and women. 72 of the subjects were characterized as nondemented throughout the study. 64 of the included subjects were characterized as demented at the time of their initial visits and remained so for subsequent scans, including 51 individuals with mild to moderate Alzheimer’s disease. Another 14 subjects were characterized as nondemented at the time of their initial visit and were subsequently characterized as demented at a later visit.
+
+### What do variables stand for
+
+* **Subject.ID**
+* **MRI.ID**
+* **Group** *(Converted / Demented / Nondemented)*
+* **Visit** - Number of visit
+* **MR.Delay** ???
+
+#### Demographics Info
+* **M.F** - Gender
+* **Hand** - Handedness *(actually all subjects were right-handed so I will drop this column)*
+* **Age**
+* **EDUC** - Years of education
+* **SES**  - Socioeconomic status as assessed by the Hollingshead Index of Social Position and classified into categories from *1 (highest status)* to *5 (lowest status)*
+
+#### Clinical Info
+* **MMSE** - Mini-Mental State Examination score *(range is from 0 = worst to 30 = best) *
+* **CDR** - Clinical Dementia Rating *(0 = no dementia, 0.5 = very mild AD, 1 = mild AD, 2 = moderate AD)*
+
+#### Derived anatomic volumes
+* **eTIV** - Estimated total intracranial volume, mm3
+* **nWBV** - Normalized whole-brain volume, expressed as a percent of all voxels in the atlas-masked image that are labeled as gray or white matter by the automated tissue segmentation process
+* **ASF** - Atlas scaling factor (unitless). Computed scaling factor that transforms native-space brain and skull to the atlas target (i.e., the determinant of the transform matrix)
+
+### Mini–Mental State Examination (MMSE)
+
+The Mini–Mental State Examination (MMSE) or Folstein test is a 30-point questionnaire that is used extensively in clinical and research settings to measure cognitive impairment. It is commonly used in medicine and allied health to screen for dementia. It is also used to estimate the severity and progression of cognitive impairment and to follow the course of cognitive changes in an individual over time; thus making it an effective way to document an individual's response to treatment. The MMSE's purpose has been not, on its own, to provide a diagnosis for any particular nosological entity.
+
+**Interpretations**
+
+Any score greater than or equal to 24 points (out of 30) indicates a normal cognition. Below this, scores can indicate severe (≤9 points), moderate (10–18 points) or mild (19–23 points) cognitive impairment. The raw score may also need to be corrected for educational attainment and age. That is, a maximal score of 30 points can never rule out dementia. Low to very low scores correlate closely with the presence of dementia, although other mental disorders can also lead to abnormal findings on MMSE testing. The presence of purely physical problems can also interfere with interpretation if not properly noted; for example, a patient may be physically unable to hear or read instructions properly, or may have a motor deficit that affects writing and drawing skills.
+
+*Information was taken from [Wikipedia page](https://en.wikipedia.org/wiki/Mini%E2%80%93Mental_State_Examination).*
+
+### Clinical Dementia Rating (CDR)
+
+The CDR™ in one aspect is a 5-point scale used to characterize six domains of cognitive and functional performance applicable to Alzheimer disease and related dementias: Memory, Orientation, Judgment & Problem Solving, Community Affairs, Home & Hobbies, and Personal Care. The necessary information to make each rating is obtained through a semi-structured interview of the patient and a reliable informant or collateral source (e.g., family member) referred to as the CDR™ Assessment Protocol.
+
+The CDR™ Scoring Table provides descriptive anchors that guide the clinician in making appropriate ratings based on interview data and clinical judgment. In addition to ratings for each domain, an overall CDR™ score may be calculated through the use of an CDR™ Scoring Algorithm. This score is useful for characterizing and tracking a patient's level of impairment/dementia:
+
+* 0 = Normal
+* 0.5 = Very Mild Dementia
+* 1 = Mild Dementia
+* 2 = Moderate Dementia
+* 3 = Severe Dementia
+
+*Information was taken from [The Charles F. and Joanne Knight Alzheimer's Disease Research Center website](http://alzheimer.wustl.edu/cdr/cdr.htm). There you can also find an [interpratation table of results](http://knightadrc.wustl.edu/cdr/PDFs/CDR_Table.pdf).*
+
+### Estimated total intracranial volume (eTIV)
+
+The ICV measure, sometimes referred to as total intracranial volume (TIV), refers to the estimated volume of the cranial cavity as outlined by the supratentorial dura matter or cerebral contour when dura is not clearly detectable. ICV is often used in studies involved with analysis of the cerebral structure under different imaging modalities, such as Magnetic Resonance (MR), MR and Diffusion Tensor Imaging (DTI), MR and Single-photon Emission Computed Tomography (SPECT), Ultrasound and Computed Tomography (CT). ICV consistency during aging makes it a reliable tool for correction of head size variation across subjects in studies that rely on morphological features of the brain. ICV, along with age and gender are reported as covariates to adjust for regression analyses in investigating progressive neurodegenerative brain disorders, such as Alzheimer's disease, aging and cognitive impairment. ICV has also been utilized as an independent voxel based morphometric feature to evaluate age-related changes in the structure of premorbid brai, determine characterizing atrophy patterns in subjects with mild cognitive impairment (MCI) and Alzheimer's disease (AD), delineate structural abnormalities in the white matter (WM) in schizophrenia, epilepsy, and gauge cognitive efficacy.
+
+*Information was taken from [PubMed Central® website](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4423585/).*
+
+
+### Model Selection 
+Using 4 Tree Based Models:
+1. Decision Trees:
+2. Random Forest
+3. Gradient Boosting
+4. XGBoost ~ LightGBM
+
+#### Model 1: Decision Tree
+
+```{r test-train split, echo = F}
+newData <- static_df %>% 
+  select(-c(1,"delay", "cdr"))
+
+set.seed(234)
+data_split <- initial_split(newData, prop = 0.8)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+>> multicollinearity—a situation where two features are highly correlated, making model coefficients unreliable.
+
+```{r decision-tree-model, echo = T}
+dmt_recipe <- recipe(dementia ~ ., data = train_data) %>% 
+  step_impute_mean(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+# our model
+tree_model <- decision_tree(
+  mode = "classification",
+  cost_complexity = tune(),
+  tree_depth = tune()
+) %>% 
+  set_engine("rpart")
+
+# cross-validation
+cv_folds <- vfold_cv(train_data, v = 5)
+
+# grid-search
+tree_grid <- grid_regular(
+  cost_complexity(),
+  tree_depth(range = c(2, 10)),
+  levels = 5
+)
+
+# workflow
+tree_workflow <- workflow() %>% 
+  add_recipe(dmt_recipe) %>% 
+  add_model(tree_model)
+```
+
+### Model Tuning
+```{r model-tuning, echo = T}
+# tune parameters
+tree_results <- tune_grid(
+  tree_workflow,
+  resamples = cv_folds,
+  grid = tree_grid
+)
+
+# best parameters
+best_params <- select_best(tree_results, metric = "accuracy")
+```
+
+#### Model Training
+```{r model-training, echo = T}
+final_tree <- finalize_workflow(tree_workflow, best_params)
+
+# Fit the final model on the training data
+final_results <- last_fit(final_tree, split = data_split)
+
+# Extract trained model
+final_model <- extract_fit_parsnip(final_results)
+```
+
+
+### Model Evaluation
+```{r model-evaluation, echo = F}
+predictions <- final_results %>%
+  collect_predictions()
+
+conf_mat <- conf_mat(predictions, truth = dementia, estimate = .pred_class)
+autoplot(conf_mat)
+
+# AUC
+roc_curve(predictions, truth = dementia, .pred_1) %>%
+  autoplot()
+```
+```{r dt-auc, echo = F}
+dt_roc_table <- roc_curve(predictions, truth = dementia, .pred_1) %>% 
+  mutate(model_name = "decision_Tree")
+
+kable(dt_roc_table, caption="Area under Curve Table")
+```
+
+**Understanding the Table Columns**
+_.threshold_ – These are different threshold values for classification. If the predicted probability is above this threshold, the model classifies the instance as dementia.
+
+_specificity_ – The True Negative Rate, indicating how well the model avoids false positives. Higher specificity means fewer healthy individuals are misclassified as having dementia.
+
+_sensitivity_ – The True Positive Rate, showing how effectively the model identifies dementia cases. A higher sensitivity means the model is good at detecting dementia.
+
+*Interpretation of the Values*
+Threshold = -Inf → Sensitivity = 1, Specificity = 0
+
+The model classifies everything as dementia (max sensitivity but 0 specificity).
+
+Threshold = 0.202 → Sensitivity = 1, Specificity = 0
+
+Same scenario: all cases classified as dementia.
+
+Threshold = 0.960 → Sensitivity = 0.111, Specificity = 0.0328
+
+The model starts distinguishing cases but does poorly—many false negatives.
+
+Threshold = Inf → Sensitivity = 0, Specificity = 1
+
+The model classifies everything as non-dementia (max specificity but 0 sensitivity).
+
+*What This Means for Our Model*
+The steep drop in sensitivity from _1_ to _0.111_ at threshold = 0.960 suggests that the model struggles to correctly classify dementia cases at higher probability thresholds.
+
+The low specificity at most thresholds indicates that the model misclassifies non-dementia cases frequently.
+
+Ideally, we want a threshold where both _sensitivity_ and _specificity_ are balanced (typically where AUC is maximized).
+
+
+
+#### Model 2: Random Forest
+```{r random-forest-model, echo=F}
+# random-forest model
+rf_model <- rand_forest(
+  mode = "classification",
+  trees = tune(),
+  mtry = tune()
+) %>% 
+  set_engine("ranger")
+
+# workflow
+rf_workflow <- workflow() %>% 
+  add_recipe(dmt_recipe) %>% 
+  add_model(rf_model)
+
+# grid search
+rf_grid <- grid_regular(
+  trees(range = c(50, 500)), # trees
+  mtry(range = c(2, 5)), # feature subset sizes
+  levels = 5
+)
+
+rf_results <- tune_grid(
+  rf_workflow,
+  resamples = cv_folds,
+  grid = rf_grid
+)
+
+# Select best parameters based on accuracy
+best_rf_params <- select_best(rf_results, metric = "accuracy")
+```
+
+```{r rf-model-training, echo = F}
+final_rf <- finalize_workflow(rf_workflow, best_rf_params)
+
+rf_final_results <- last_fit(final_rf, split = data_split)
+
+# Extract trained model
+rf_final_model <- extract_fit_parsnip(rf_final_results)
+```
+
+### Model Evaluation
+```{r rf-model-evaluation, echo = F}
+predictions <- rf_final_results %>%
+  collect_predictions()
+
+conf_mat <- conf_mat(predictions, truth = dementia, estimate = .pred_class)
+autoplot(conf_mat)
+
+# AUC
+roc_curve(predictions, truth = dementia, .pred_1) %>%
+  autoplot()
+```
+```{r rf-auc, echo = F}
+rf_roc_table <- roc_curve(predictions, truth = dementia, .pred_1) %>% 
+  mutate(model_name = "random_Forest")
+
+kable(rf_roc_table, caption="Area under Curve Table")
+```
+
+
+#### Model 3: Gradient Boost
+First, let's quickly discuss the difference between `gradient boost` and `xgboost`; `gradient boost` is a general boosting framework that builds models sequentially. It uses decision trees to minimize errors through gradient descent, in R we use __gbm__ package; `xgboost` is an optimized version that uses L1,L2 regularization to manage overfitting and it supports parallel computing.
+
+```{r gboost-model-recipe, echo = F}
+train_data$m_f <- as.factor(train_data$m_f)
+# model spec
+model_gbm <- gbm.fit(x = select(train_data, -dementia),
+                     y = train_data$dementia,
+                     distribution = "multinomial",
+                     n.trees = 5000,
+                     shrinkage = 0.01,
+                     nTrain = round(nrow(train_data) * 0.8),
+                     verbose = FALSE)
+
+print(model_gbm)
+summary(model_gbm)
+
+prediction_gbm <- predict.gbm(object = model_gbm,
+                              newData = select(test_data, -dementia),
+                              type = "response",
+                              n.trees = gbm.perf(model_gbm, plot.it = FALSE))
+
+prediction_gbm <- apply(prediction_gbm, 1, which.max)
+# prediction_gbm <- conv_to_orig(prediction_gbm)
+
+confusionMatrix(data = prediction_gbm, reference = test_data$dementia)
+
+AUC_gbm <- Metrics::auc(actual, test_data$dementia, predicted = prediction_gbm)
+```
+#### Model 4:XgBoost
+```{r xgboost-model-recipe, echo = F}
+# model spec
+gbm_model <- boost_tree(trees = 1000,
+                         learn_rate = 0.01,
+                         tree_depth = 3) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+# workflow
+gbm_workflow <- workflow() %>% 
+  add_model(gbm_model) %>% 
+  add_recipe(dmt_recipe)
+
+# train model
+gbm_fit <- last_fit(gbm_workflow, split = data_split)
+
+# predictions
+predictions <- gbm_fit %>%
+  collect_predictions()
+
+conf_mat <- conf_mat(predictions, truth = dementia, estimate = .pred_class)
+autoplot(conf_mat)
+
+# AUC
+roc_curve(predictions, truth = dementia, .pred_1) %>%
+  autoplot()
+```
+
+```{r gbm-auc, echo = F}
+gbm_roc_table <- roc_curve(predictions, truth = dementia, .pred_1) %>% 
+  mutate(model_name = "gbm")
+
+kable(gbm_roc_table, caption="Area under Curve Table")
+```
+
+```{r}
+roc_auc(predictions, truth = dementia, .pred_1) 
+```
+AUC = 0.023 suggests our model is barely better than random guessing (and may even be worse).
+
+### Model Deployment
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Acknowledgements:
+When publishing findings that benefit from OASIS data, please include the following grant numbers in the acknowledgements section and in the associated Pubmed Central submission: P50 AG05681, P01 AG03991, R01 AG021910, P20 MH071616, U24 RR0213
+
