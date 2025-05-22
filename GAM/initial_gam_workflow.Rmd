@@ -1,0 +1,356 @@
+---
+title: "Understanding Generalized Additive Models"
+output: html_notebook
+---
+
+## GAM
+In this exercise we will explore the concept of **GAM** - Generalized Additive Models - these are models that take dynamic approach to modelling behavior. Most, behavioral questions are never straight forward, do not follow a linear model or pattern of behavior, it requires a flexible approach to understanding complex relationships within a data set - in this case, the use of _splines_ (we will get to that) as a smoothing factor, along a multi-modal use in an additive manner to really understand what influences patterns - in this case, dolphin behavior.
+
+
+```{r Load Dependencies, echo = F, message=F, warning=F}
+# check and install required packages
+required_packages <- c("gam", "ISTR", "mgcv", "GGally", "kableExtra")
+missing_packages <- required_packages[!required_packages %in% installed.packages()[, "Package"]]
+if(length(missing_packages)) {
+  install.packages(missing_packages)
+}
+
+library(tidymodels)
+library(tidyverse)
+library(broom)
+library(scales)# For better axis formatting
+library(janitor)
+library(gam)
+# library(ISTR)
+library(mgcv)
+library(tidyr)
+library(kableExtra)
+library(GGally)  # For pairs plot
+```
+## Dolphins
+The problem is described as reviewing the impact on these contributing factors on **$behav** - we expect to see some variance in the contributing factors, some linear and others not quite.
+
+```{r, echo = F}
+data_pth = "C:/Users/AfrologicInsect/.cache/kagglehub/datasets/erenakbulut/common-bottlenose-dolphin-behavior/versions/1/Data.csv"
+
+df <- read.csv(data_pth) %>% 
+  clean_names()
+
+df %>% 
+  glimpse()
+```
+
+
+#### How to Decide Which Variables to Apply Smooth Splines (s()):
+Think of _splines_ as bendable rulers that adjust to the shape of the data. They are built using knots, which are points where the curve can change direction smoothly. The most common types include B-splines and thin plate regression splines, which help capture patterns without overfitting.
+
+In GAMs, splines are used to model nonlinear effects while maintaining interpretability. They help reveal hidden trends in data that a simple linear model might miss and are best applied to numeric predictors where relationships with the target variable are expected to be non-linear. Here's a step-by-step guide in deciding where to use them:
+
+1. Look at Variable Types:
+- Smooth terms (s()) are suited for continuous numeric predictors (e.g., `$speed`, `$rr`, `$distance`, `$lin`).
+- Avoid applying s() to categorical or integer variables like `$cat` or `$grpsize`.
+
+2. Consider the Nature of the Relationship:
+If you believe the relationship between a predictor and the target variable isn't strictly linear, splines are ideal. For example:
+
+- `$speed`: Dolphin behavior may vary non-linearly with swimming speed.
+- `$distance`: Behavioral states could be influenced by a non-linear relationship with the distance traveled.
+
+One way of understanding the relationship is by plotting for the relationships, each predictor against the target variable to observe the relationship. If we see curves or irregular trends, *use a spline*.
+
+#### Exploratory Data Analysis (EDA):
+To achieve this we will be review the underlying relationships through an EDA, i.e, stats., tables, plots, etc.
+
+
+##### 1. Basic summary statistics
+```{r Distro. of Target Variable, echo = F}
+behavior_summary <- df %>%
+  group_by(behav) %>%
+  summarise(
+    count = n(),
+    proportion = n()/nrow(.),
+    avg_speed = mean(speed, na.rm = TRUE),
+    avg_rr = mean(rr, na.rm = TRUE),
+    avg_lin = mean(lin, na.rm = TRUE),
+    avg_distance = mean(distance, na.rm = TRUE)
+  ) %>%
+  arrange(desc(count))
+
+kable(behavior_summary, caption = "Basic behaviour stats.")
+```
+
+##### 2. Distribution of behaviors (count and proportion)
+```{r Distro. of Target Variable II, echo = F, fig.width=3, fig.height=3}
+ggplot(df, aes(x = behav, fill = behav)) +
+  geom_bar() +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -0.5) +
+  labs(title = "Distribution of Behavior Categories", 
+       x = "Behavior", y = "Count") +
+  theme_minimal()
+```
+
+
+##### 3. Numeric variables by behavior
+
+```{r Boxplot Distro, echo = F, warning = F, fig.width=3, fig.height=3}
+numeric_vars <- c("speed", "rr", "lin", "distance", "timeper")
+
+lapply(numeric_vars, function(var) {
+  ggplot(df, aes_string(x = "behav", y = var, fill = "behav")) +
+    geom_boxplot() +
+    labs(title = glue("Distribution of **{var}** by Behavior"), x = "Behavior", y = var) +
+    theme_minimal()
+})
+```
+
+##### 4. Categorical variables by behavior
+-> Group size
+```{r Categorical Distro, echo = F, fig.width=3, fig.height=3}
+ggplot(df, aes(x = factor(grpsize), fill = behav)) +
+  geom_bar(position = "fill") +
+  labs(title = "Behavior Distribution by Group Size",
+       x = "Group Size", y = "Proportion") +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+```
+
+-> Calf presence
+```{r Presence of Calf, echo = F, fig.width=3, fig.height=3}
+ggplot(df, aes(x = factor(calf), fill = behav)) +
+  geom_bar(position = "fill") +
+  labs(title = "Behavior Distribution by Calf Presence",
+       x = "Calf Present (1=Yes)", y = "Proportion") +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+```
+
+-> Category
+```{r, echo = F, fig.width=3, fig.height=3}
+ggplot(df, aes(x = cat, fill = behav)) +
+  geom_bar(position = "fill") +
+  labs(title = "Behavior Distribution by Category",
+       x = "Category", y = "Proportion") +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+```
+
+##### 5. Timeper (time period) analysis
+```{r Time period density, echo = F, fig.width=3, fig.height=3}
+ggplot(df, aes(x = timeper, fill = behav)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Behavior Distribution Across Time Periods",
+       x = "Time Period", y = "Density") +
+  theme_minimal()
+```
+
+##### 6. Pairwise relationships colored by behavior
+Smaller sample for better visualization if dataset is large
+```{r Pairwise density, echo = F, fig.width=3, fig.height=3}
+# set.seed(123)
+# sample_df <- df %>% 
+#   select(all_of(numeric_vars), behav) %>%
+#   sample_n(min(100, nrow(.)))
+
+# Use ggpairs without correlation tests
+ggpairs(df, 
+        columns = numeric_vars,
+        mapping = aes(color = behav),
+        upper = list(continuous = "blank"),  # Skip correlation
+        lower = list(
+          continuous = wrap("points", alpha = 0.3, size = 0.5),
+          combo = wrap("facethist", bins = 20)
+        )) +
+  labs(title = "Pairwise Relationships by Behavior") +
+  theme_minimal()
+```
+
+##### Dissecting the plots
+**Pairwise Relationships**
+
+1. Speed vs. Respiration Rate (rr)
+
+There's a noticeable distinction between behavior types based on speed and rr.
+
+Foraging behavior occurs at lower speeds but higher rr, possibly indicating exertion from hunting.
+
+Resting shows moderate speed but lower rr, which aligns with reduced movement.
+
+2. Distance vs. Speed
+
+Non-linear trends emerge: dolphins covering greater distances tend to maintain a consistent speed instead of fluctuating frequently.
+
+Travel behavior seems distributed across mid-range distances and speed levels.
+
+3. Group Size vs. Behavior
+
+Larger groups show more frequent social interactions, with foraging behaviors often happening in smaller groups.
+
+Resting appears to occur at variable group sizes, suggesting it might not be group-dependent.
+
+4. Presence of a Calf vs. Behavior
+
+The presence of a calf does not strongly influence behavior, based on model output significance levels.
+
+Calf presence might be an independent factor rather than a primary behavioral determinant.
+
+##### 7. Individual patterns (if IDs represent individuals)
+```{r}
+if(length(unique(df$id)) < 20) {  # Only plot if not too many individuals
+  ggplot(df, aes(x = id, fill = behav)) +
+    geom_bar() +
+    labs(title = "Behavior Distribution by Individual ID",
+         x = "Individual ID", y = "Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+#####  8. Count vs behavior
+```{r, fig.width=3, fig.height=3}
+ggplot(df, aes(x = behav, y = count, fill = behav)) +
+  geom_boxplot() +
+  labs(title = "Count Distribution by Behavior",
+       x = "Behavior", y = "Count") +
+  theme_minimal()
+```
+
+**ID's and count**
+From the distributions above - we've now got the following understanding of what the relationships are:
+
+1. Numeric Variables & Behavior
+
+The boxplots suggest that behaviors vary based on numerical predictors like speed, distance, and rr (possibly respiration rate).
+
+Foraging behavior is associated with higher rr and lower speed compared to other behaviors.
+
+Resting tends to occur at moderate rr and speed levels.
+
+2. Categorical Variables & Behavior
+
+Group size and calf presence seem to have some impact on behaviors, with larger groups showing different behavioral distributions.
+
+
+**Key Takeaways**
+Behavioral states are influenced by both linear and non-linear relationships.
+
+Speed and respiration rate interact in a way that differentiates active behaviors from passive ones.
+
+We can begin to sense how the predictive model would reinforce these group dynamics matter, like how calf presence does not show strong predictive influence on how the dolphins will largely behave. Distance traveled also suggests a patterned movement strategy rather than randomness.
+
+## GAM Analysis
+
+```{r Splits, echo = T}
+set.seed(234)
+data_split <- initial_split(df, prop = 0.8)
+train_data <- training(data_split) %>% 
+  mutate(
+    behav = as.factor(behav)#,
+    # grpsize = as.integer(grpsize),
+    # calf = as.integer(calf)
+  )
+test_data <- testing(data_split)
+```
+
+For the *Generalized Additive Model (GAM)*, we will use the _mgcv_ package - it integrates well with Tidymodels.
+
+```{r GAM, echo = F, eval = F}
+## Specifications - set to regression mode
+# gam_spec <- gen_additive_mod() %>% 
+#   set_engine("mgcv") %>% 
+#   set_mode("classification")
+# 
+# ## Formula: Define relationship
+# # gam_formula <- behav ~ s(speed) + s(rr) + s(distance) + s(lin) + grpsize + calf
+# 
+# ## Recipe
+# gam_recipe <- recipe(behav ~ speed + rr + distance + lin + grpsize + calf, data = train_data) %>%
+#   step_normalize(all_numeric_predictors()) %>%
+#   step_ns(speed, rr, distance, lin, deg_free = 3) 
+# 
+# ## Create Workflow
+# workflow <- workflow() %>% 
+#   add_model(gam_spec) %>%
+#   # add_formula(gam_formula)
+#   add_recipe(gam_recipe)
+# 
+# ## Train Model on the Training data
+# gam_fit <- workflow %>% 
+#   fit(data = train_data)
+```
+
+
+Apply directly to the _mgcv_ library
+```{r mgcv, echo = T}
+gam_formula <- behav ~ s(speed) + s(rr) + s(distance) + s(lin) + grpsize + calf # + te(grpsize, calf), s(speed, k=10)
+
+gam_model <- gam(
+  gam_formula,
+  data = train_data,
+  family = binomial(),
+  method = "REML"
+)
+
+summary(gam_model)
+```
+
+
+
+**Smooth Terms (Splines) in GAM Analysis**
+
+The Generalized Additive Model (GAM) suggests that some relationships are non-linear, especially for distance (significant smooth term) and possibly rr.
+
+_Speed_ does not show a strong non-linear effect, suggesting its influence might be more linear.
+
+**Overall Model Performance**
+
+The explained deviance of 52% indicates a reasonable ability to capture behavior variability with these predictors.
+
+The significance levels suggest that group size has a strong effect, while calf presence does not.
+
+Based on this, behaviors appear influenced by both *linear* and *non-linear* relationships, with _distance_ and _respiration rate_ showing non-linear patterns.
+
+Now we have built a baseline model that accomodates for the basics and an understanding or BAU guide to using the Generalized Additive Model, for linear and non-linear relationships..
+
+
+```{r Evaluate Model, echo = T}
+predictions <- predict(gam_fit, new_data = test_data) %>% 
+  bind_cols(test_data)
+
+metrics <- predictions %>% 
+  metrics(truth = behav, estimate = .pred)
+
+print(metrics)
+```
+
+
+```{r Viz Results, echo = T}
+ggplot(predictions, aes(x = behav, y = .pred)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "GAM Predictions vs Actual",
+       x = "Actual Values",
+       y = "Predicted Values")
+```
+
+
+**Other Thoughts & Interpretation**
+Looking deeper into calf presence and its influence on behavior, the analysis suggests that calves do not significantly impact dolphin behavior within this dataset. Here's why:
+
+Statistical Insights: 
+The p-value for calf presence in the model is 0.377, indicating a non-significant effect on behavior.
+
+Compare this to group size, which has a highly significant effect (p-value = 1.82e-05)—showing that larger groups strongly influence behavior, but the presence of a calf does not.
+
+Observed Patterns: 
+While the GAM model did account for calf presence, the lack of significance means it doesn't differentiate behaviors clearly based on whether a calf is present or not.
+
+The boxplots and pairwise relationships further confirm no strong behavioral shifts when calves are in the group.
+
+Unlike group size, which influences social interactions and movement dynamics, calves seem to be more passive participants in behavioral shifts.
+
+Dolphins might prioritize protective behavior over distinct behavioral changes when calves are around, but this isn’t strongly reflected in movement metrics like speed, respiration rate, or distance traveled.
+
+
+
+
+
