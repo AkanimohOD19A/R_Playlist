@@ -317,4 +317,4 @@ For questions or issues:
 
 **Last Updated**: June 2025  
 **Version**: 1.0.0  
-**Maintainer**: [Your Name]
+**Maintainer**: AfroLogicInsect| Akan Daniel
