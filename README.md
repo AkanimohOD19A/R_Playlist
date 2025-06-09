@@ -135,16 +135,16 @@ The model accepts the following input parameters:
 
 | Feature | Type | Description | Range/Options |
 |---------|------|-------------|---------------|
-| **Age** | Numeric | User's age | 10-100 years |
-| **Gender** | Categorical | User's gender | Male, Female |
-| **Income** | Numeric | Annual income | $0-$200,000 |
-| **Music Genre** | Categorical | Primary music preference | Pop, Rock, Hip-Hop, Electronic, Classical, Jazz, Country, R&B |
-| **Playlist Count** | Numeric | Number of user playlists | 0-100 |
-| **Favorite Artists** | Numeric | Count of favorite artists | 0-50 |
-| **Subscription Type** | Categorical | Account type | Free, Premium |
-| **Listening Frequency** | Numeric | Days per week of listening | 1-7 |
-| **Preferred Time** | Categorical | Preferred listening time | Morning, Afternoon, Evening, Night |
-| **Device Type** | Categorical | Primary listening device | Mobile, Desktop, Tablet, Smart Speaker |
+| **podcast_name** | Character | Podcast's Name | ... |
+| **episode_title** | Character | Episodes | 0-1000 |
+| **episode_length_minutes** | Numeric | Episode's Length | 0-350.55 |
+| **Genre** | Categorical | Primary podacst preference | True Crime, Comedy, Education, Technology, Health, News, Music, Sports |
+| **host_popularity_percentage** | Numeric | Host Popularity | 1-150 |
+| **publication_day** | Categorical | Day of Publication | Sunday, Monday, Tuesday, Wedsnesday |
+| **publication_time** | Categorical | Time of Publishing | Night, Afternoon |
+| **episode_sentiment** | Categorical | Sentiment | Positive, Negative, Neutral |
+| **number_of_ads** | Numerical | Ads | 0 - 110 |
+| **guest_popularity_percentage** | Numerical | Guest Popularity | 0-120 |
 
 ## 📈 Model Performance
 
@@ -317,4 +317,4 @@ For questions or issues:
 
 **Last Updated**: June 2025  
 **Version**: 1.0.0  
-**Maintainer**: AfroLogicInsect| Akan Daniel
+**Maintainer**: AfroLogicInsect | Akan Daniel
