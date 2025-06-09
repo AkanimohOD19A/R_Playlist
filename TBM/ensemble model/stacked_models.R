@@ -203,17 +203,30 @@ ensemble_model <- readRDS("TBM_ensemble_model.rds")
 
 # predict with ensemble
 predict_w_ensemble <- function(new_data){
+  rf_model <- ensemble_model$base_models$rf_model
+  xgb_model <- ensemble_model$base_models$xgb_model
+  bag_model <- ensemble_model$base_models$bag_model
   # Generate base model predictions
-  new_data$rf_pred <- predict(rf_final, new_data = new_data)$.pred
-  new_data$xgb_pred <- predict(xgb_final, new_data = new_data)$.pred
-  new_data$bag_pred <- predict(bag_final, new_data = new_data)$.pred
+  rf_pred <- predict(rf_model, new_data = new_data)$.pred
+  xgb_pred <- predict(xgb_model, new_data = new_data)$.pred
+  bag_pred <- predict(bag_model, new_data = new_data)$.pred
+  
+  meta_input <- data.frame(
+    rf_pred = rf_pred,
+    xgb_pred = xgb_pred,
+    bag_pred = bag_pred
+  )
   
   # Use meta-model for final predictions
-  predict(ensemble_model, new_data[, c("rf_pred", "xgb_pred", "bag_pred")])$.pred
+  final_pred <- predict(ensemble_model$meta_model, new_data = meta_input)$.pred
+  
+  return(final_pred)
 }
 
 result <- predict_w_ensemble(full_df[1,] %>% 
                                select(-c(id, listening_time_minutes)))
+
+print(result)
 
 
 # > meta_fit %>% extract_fit_engine() %>% .$prediction.error
@@ -255,5 +268,4 @@ result <- predict_w_ensemble(full_df[1,] %>%
 # Feature engineering to check if additional predictors improve performance.
 # 
 # Adding variable importance tracking (importance = "permutation") to see which base models contribute most.
-
 
